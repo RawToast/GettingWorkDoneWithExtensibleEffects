@@ -2,25 +2,20 @@ package scan
 
 import java.nio.file._
 
-import scala.compat.java8.StreamConverters._
-import scala.collection.SortedSet
-
 import cats._
 import cats.data._
 import cats.implicits._
-
-import org.atnos.eff._
-import org.atnos.eff.all._
-import org.atnos.eff.syntax.all._
-
-import org.atnos.eff.addon.monix._
-import org.atnos.eff.addon.monix.task._
-import org.atnos.eff.syntax.addon.monix.task._
-
 import monix.eval._
 import monix.execution._
+import org.atnos.eff._
+import org.atnos.eff.addon.monix.task._
+import org.atnos.eff.all._
+import org.atnos.eff.syntax.addon.monix.task._
+import org.atnos.eff.syntax.all._
+import scan.EffTypes._
 
-import EffTypes._
+import scala.collection.SortedSet
+import scala.compat.java8.StreamConverters._
 
 import scala.concurrent.duration._
 
@@ -58,10 +53,10 @@ object Scanner {
   }
 
 
-  def takeTopN[R: _config]: Eff[R, Monoid[PathScan]] = for {
-    scanConfig <- ask
-  } yield new Monoid[PathScan] {
-    def empty: PathScan = PathScan.empty
+  type _filesystem[R] = Reader[Filesystem, ?] <= R
+  type _config[R] = Reader[ScanConfig, ?] <= R
+  type _logger[R] = Writer[String, ?] <= R
+}
 
     def combine(p1: PathScan, p2: PathScan): PathScan = PathScan(
       p1.largestFiles.union(p2.largestFiles).take(scanConfig.topN),
@@ -113,7 +108,25 @@ object PathScan {
 
   def empty = PathScan(SortedSet.empty, 0, 0)
 
-  def topNMonoid(n: Int): Monoid[PathScan] = new Monoid[PathScan] {
+  def scan[R: _filesystem: _config: _throwableEither: _task](path: FilePath): Eff[R, PathScan] = path match {
+    case file: File =>
+      for {
+        fs <- FileSize.ofFile(file)
+      }
+      yield PathScan(SortedSet(fs), fs.size, 1)
+    case dir: Directory =>
+      for {
+        filesystem <- ask[R, Filesystem]
+        topN <- PathScan.takeTopN
+        files <- catchNonFatalThrowable(filesystem.listFiles(dir))
+        concurrentChildScans <- Eff.traverseA(files)(f => taskSuspend(Task.eval(PathScan.scan[R](f))))
+      }
+      yield concurrentChildScans.combineAll(topN)
+  }
+
+  def takeTopN[R: _config]: Eff[R, Monoid[PathScan]] = for {
+    scanConfig <- ask
+  } yield new Monoid[PathScan] {
     def empty: PathScan = PathScan.empty
 
     def combine(p1: PathScan, p2: PathScan): PathScan = PathScan(

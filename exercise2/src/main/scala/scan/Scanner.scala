@@ -35,7 +35,6 @@ object Scanner {
 }
 
 object EffTypes {
-
   type _filesystem[R] = Reader[Filesystem, ?] <= R
   type _config[R] = Reader[ScanConfig, ?] <= R
 }
@@ -89,8 +88,9 @@ object PathScan {
     case dir: Directory =>
       for {
         filesystem <- ask[R, Filesystem]
-        topN <- PathScan.takeTopN()
-        childScans <- filesystem.listFiles(dir).traverse(PathScan.scan[R](_))
+        topN <- PathScan.takeTopN
+        listFiles <- catchNonFatalThrowable(filesystem.listFiles(dir))
+        childScans <- listFiles.traverse(PathScan.scan[R](_))
       } yield childScans.combineAll(topN)
   }
 
@@ -112,10 +112,10 @@ case class FileSize(path: File, size: Long)
 
 object FileSize {
 
-  def ofFile[R: _filesystem](file: File): Eff[R, FileSize] = for {
-    fs <- ask[R, Filesystem]
-    fileSize: FileSize = FileSize(file, fs.length(file))
-  } yield fileSize
+  def ofFile[R: _filesystem: _throwableEither](file: File): Eff[R, FileSize] = for {
+    fs <- ask
+    result <- catchNonFatalThrowable(FileSize(file, fs.length(file)))
+  } yield result
 
   implicit val ordering: Ordering[FileSize] = Ordering.by[FileSize, Long  ](_.size).reverse
 }
